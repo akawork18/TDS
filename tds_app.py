@@ -15,6 +15,7 @@ def hra_exemption(basic, hra, rent, metro):
 # ================= TAX =================
 def compute_tax(income, regime):
     tax = 0
+
     if regime == "New":
         if income <= 300000: tax = 0
         elif income <= 600000: tax = (income-300000)*0.05
@@ -30,7 +31,7 @@ def compute_tax(income, regime):
         else: tax = 112500+(income-1000000)*0.3
         if income <= 500000: tax = 0
 
-    return tax * 1.04
+    return tax * 1.04  # cess
 
 # ================= MAIN =================
 if uploaded_file:
@@ -39,7 +40,7 @@ if uploaded_file:
         xls = pd.ExcelFile(uploaded_file)
         sheet_names = xls.sheet_names
 
-        # 🔍 Auto detect sheets
+        # ===== Auto detect sheets =====
         payroll_sheet = None
         decl_sheet = None
 
@@ -49,7 +50,7 @@ if uploaded_file:
             if "decl" in s.lower():
                 decl_sheet = s
 
-        # fallback logic
+        # fallback
         if not payroll_sheet:
             payroll_sheet = sheet_names[0]
 
@@ -58,10 +59,21 @@ if uploaded_file:
 
         st.success(f"Using sheets → Payroll: {payroll_sheet} | Declarations: {decl_sheet}")
 
+        # ===== Read Payroll =====
         payroll = pd.read_excel(xls, sheet_name=payroll_sheet)
-        decl = pd.read_excel(xls, sheet_name=decl_sheet)
 
-        df = payroll.merge(decl, on="EmpID", how="left")
+        # ===== Read Declarations SAFELY =====
+        if decl_sheet and decl_sheet in sheet_names:
+            decl = pd.read_excel(xls, sheet_name=decl_sheet)
+
+            if isinstance(decl, pd.DataFrame) and "EmpID" in decl.columns:
+                df = payroll.merge(decl, on="EmpID", how="left")
+            else:
+                st.warning("Declarations sheet invalid. Proceeding without it.")
+                df = payroll.copy()
+        else:
+            st.warning("Declarations sheet not found. Proceeding without it.")
+            df = payroll.copy()
 
         results = []
 
@@ -74,7 +86,7 @@ if uploaded_file:
 
             hra_ex = hra_exemption(basic, hra, rent, metro)
 
-            # Deductions (capped)
+            # ===== Deductions =====
             d80c = min(float(e.get("CH80C", 0) or 0), 150000)
             d80d = min(float(e.get("CH80D", 0) or 0), 50000)
             nps = min(float(e.get("NPS", 0) or 0), 50000)
@@ -97,18 +109,22 @@ if uploaded_file:
             results.append({
                 "EmpID": e.get("EmpID"),
                 "Regime": e.get("Regime"),
+
                 "Gross Salary": round(gross, 2),
 
+                # ===== Exemptions =====
                 "HRA Exemption": round(hra_ex, 2),
 
+                # ===== Chapter VI-A =====
                 "80C (Capped)": d80c,
                 "80D": d80d,
                 "NPS": nps,
 
+                # ===== Statutory =====
                 "Statutory (PF+PT+ESI)": statutory,
 
+                # ===== Final =====
                 "Taxable Income": round(taxable, 2),
-
                 "Annual TDS": round(tax, 2),
                 "Monthly TDS": round(tax / 12, 2),
             })
