@@ -7,10 +7,12 @@ st.title("📊 TDS Computation System (Audit Ready)")
 
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
+# ================= HRA =================
 def hra_exemption(basic, hra, rent, metro):
     perc = 0.5 if metro else 0.4
     return max(0, min(hra, rent - 0.1 * basic, perc * basic))
 
+# ================= TAX =================
 def compute_tax(income, regime):
     tax = 0
     if regime == "New":
@@ -27,63 +29,101 @@ def compute_tax(income, regime):
         elif income <= 1000000: tax = 12500+(income-500000)*0.2
         else: tax = 112500+(income-1000000)*0.3
         if income <= 500000: tax = 0
+
     return tax * 1.04
 
+# ================= MAIN =================
 if uploaded_file:
-    payroll = pd.read_excel(uploaded_file, sheet_name="Payroll")
-    decl = pd.read_excel(uploaded_file, sheet_name="Declarations")
 
-    df = payroll.merge(decl, on="EmpID", how="left")
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        sheet_names = xls.sheet_names
 
-    results = []
+        # 🔍 Auto detect sheets
+        payroll_sheet = None
+        decl_sheet = None
 
-    for _, e in df.iterrows():
-        basic = e.get("BASIC", 0)
-        hra = e.get("HRA", 0)
-        rent = e.get("RENT", 0)
-        metro = str(e.get("METRO", "No")).lower() == "yes"
+        for s in sheet_names:
+            if "pay" in s.lower():
+                payroll_sheet = s
+            if "decl" in s.lower():
+                decl_sheet = s
 
-        hra_ex = hra_exemption(basic, hra, rent, metro)
+        # fallback logic
+        if not payroll_sheet:
+            payroll_sheet = sheet_names[0]
 
-        d80c = min(e.get("CH80C", 0), 150000)
-        d80d = min(e.get("CH80D", 0), 50000)
-        nps = min(e.get("NPS", 0), 50000)
+        if not decl_sheet and len(sheet_names) > 1:
+            decl_sheet = sheet_names[1]
 
-        statutory = (
-            e.get("PROVIDENT_FUND", 0)
-            + e.get("PROFESSIONAL_TAX", 0)
-            + e.get("EMPLOYEE_ESI", 0)
+        st.success(f"Using sheets → Payroll: {payroll_sheet} | Declarations: {decl_sheet}")
+
+        payroll = pd.read_excel(xls, sheet_name=payroll_sheet)
+        decl = pd.read_excel(xls, sheet_name=decl_sheet)
+
+        df = payroll.merge(decl, on="EmpID", how="left")
+
+        results = []
+
+        for _, e in df.iterrows():
+
+            basic = float(e.get("BASIC", 0) or 0)
+            hra = float(e.get("HRA", 0) or 0)
+            rent = float(e.get("RENT", 0) or 0)
+            metro = str(e.get("METRO", "No")).lower() == "yes"
+
+            hra_ex = hra_exemption(basic, hra, rent, metro)
+
+            # Deductions (capped)
+            d80c = min(float(e.get("CH80C", 0) or 0), 150000)
+            d80d = min(float(e.get("CH80D", 0) or 0), 50000)
+            nps = min(float(e.get("NPS", 0) or 0), 50000)
+
+            statutory = (
+                float(e.get("PROVIDENT_FUND", 0) or 0)
+                + float(e.get("PROFESSIONAL_TAX", 0) or 0)
+                + float(e.get("EMPLOYEE_ESI", 0) or 0)
+            )
+
+            gross = float(e.get("GROSS_EARN", 0) or 0)
+
+            taxable = max(
+                0,
+                gross - hra_ex - 50000 - d80c - d80d - nps - statutory
+            )
+
+            tax = compute_tax(taxable, str(e.get("Regime", "New")))
+
+            results.append({
+                "EmpID": e.get("EmpID"),
+                "Regime": e.get("Regime"),
+                "Gross Salary": round(gross, 2),
+
+                "HRA Exemption": round(hra_ex, 2),
+
+                "80C (Capped)": d80c,
+                "80D": d80d,
+                "NPS": nps,
+
+                "Statutory (PF+PT+ESI)": statutory,
+
+                "Taxable Income": round(taxable, 2),
+
+                "Annual TDS": round(tax, 2),
+                "Monthly TDS": round(tax / 12, 2),
+            })
+
+        result_df = pd.DataFrame(results)
+
+        st.subheader("📋 TDS Working")
+        st.dataframe(result_df, use_container_width=True)
+
+        st.download_button(
+            "⬇ Download Excel",
+            result_df.to_csv(index=False),
+            "TDS_Output.csv"
         )
 
-        gross = e.get("GROSS_EARN", 0)
-
-        taxable = max(
-            0,
-            gross - hra_ex - 50000 - d80c - d80d - nps - statutory
-        )
-
-        tax = compute_tax(taxable, e.get("Regime", "New"))
-
-        results.append({
-            "EmpID": e["EmpID"],
-            "Gross": gross,
-            "HRA Exemption": hra_ex,
-            "80C": d80c,
-            "80D": d80d,
-            "NPS": nps,
-            "Statutory": statutory,
-            "Taxable Income": taxable,
-            "Annual TDS": round(tax),
-            "Monthly TDS": round(tax/12)
-        })
-
-    result_df = pd.DataFrame(results)
-
-    st.subheader("📋 TDS Working")
-    st.dataframe(result_df, use_container_width=True)
-
-    st.download_button(
-        "⬇ Download Excel",
-        result_df.to_csv(index=False),
-        "TDS_Output.csv"
-    )
+    except Exception as e:
+        st.error("Error processing file. Please check format.")
+        st.exception(e)
